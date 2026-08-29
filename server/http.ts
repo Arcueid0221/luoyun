@@ -60,10 +60,14 @@ const MAX_BODY = 1024 * 1024;
  *      `same-site` 也拒 —— 本机另一个端口上的页面（别的项目的 dev server、
  *      Storybook、`http://anything.localhost`）同样不可信。
  *   2. `Origin`：出现了就必须和 `Host` 一致。兜不发 Sec-Fetch-* 的老浏览器。
- *   3. 写请求的 `Content-Type` 必须是 `application/json`：跨站不触发预检就能送达的
- *      只有 form-urlencoded / multipart / text-plain 这三种"简单请求"，
- *      而 `application/json` 一定触发预检，我们又不给任何 CORS 响应头
- *      （`vite.config.ts` 里 `cors: false`）。
+ *   3. 带 body 的写请求（POST 这类）的 `Content-Type` 必须是 `application/json`：
+ *      跨站不触发预检就能送达的只有 form-urlencoded / multipart / text-plain
+ *      这三种"简单请求"，而 `application/json` 一定触发预检，我们又不给任何
+ *      CORS 响应头（`vite.config.ts` 里 `cors: false`）。
+ *      DELETE 不在这条里：简单请求的方法只有 GET / HEAD / POST，跨站发 DELETE
+ *      一定先预检、一定被挡，这个头对它没有防护价值；反过来要求它会误伤正经
+ *      调用方 —— Java 的 HttpClient / RestTemplate / WebClient 对无 body 的
+ *      DELETE 默认不发 `Content-Type`，Provider 的"退出登录"就是这样被 415 挡掉的。
  *
  * 命令行客户端（curl、脚本）三个头都不发，照常放行 —— 它们不在这个威胁模型里。
  */
@@ -86,7 +90,7 @@ export function guardRequest(req: IncomingMessage): void {
   }
 
   const method = (req.method ?? 'GET').toUpperCase();
-  if (method !== 'GET' && method !== 'HEAD') {
+  if (method !== 'GET' && method !== 'HEAD' && method !== 'DELETE') {
     const type = (req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
     if (type !== 'application/json') {
       throw new HttpError(415, '写请求必须带 Content-Type: application/json');

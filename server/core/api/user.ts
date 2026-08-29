@@ -1,4 +1,5 @@
 import { getApiClient } from '../client.ts';
+import { AuthExpiredError } from '../errors.ts';
 import type { UserProfile } from '../types.ts';
 
 interface NeteaseUserAccountResponse {
@@ -18,7 +19,7 @@ export async function getUserProfile(): Promise<UserProfile> {
   // 关键：cookie 失效时这个接口返回 code 200 + profile: null。
   // 必须在这里抛，checkAuth 才能判断出"未登录"。
   if (!response.profile) {
-    throw new Error('未登录或 MUSIC_U 已失效');
+    throw new AuthExpiredError('未登录或 MUSIC_U 已失效');
   }
 
   return {

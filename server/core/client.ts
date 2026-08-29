@@ -8,6 +8,7 @@ import { pipeline } from 'node:stream/promises';
 import type { Readable } from 'node:stream';
 import { weapi, linuxapi, eapi } from './crypto.ts';
 import { getAuthManager } from './auth.ts';
+import { AuthExpiredError, isLoginRequiredCode } from './errors.ts';
 import { verbose, debug } from './logger.ts';
 
 // 强制 IPv4。网易的 CDN 对 IPv6 出口的防盗链判定更严，走 v6 会拿到 403。
@@ -29,6 +30,12 @@ export interface RequestOptions {
 
 /** download 的进度回调。total 来自 content-length，可能缺失 */
 export type ProgressFn = (received: number, total?: number) => void;
+
+export interface DownloadStream {
+  stream: Readable;
+  contentLength?: number;
+  contentType?: string;
+}
 
 export class ApiClient {
   private client: AxiosInstance;
@@ -141,6 +148,11 @@ export class ApiClient {
       debug(`Response code: ${responseData.code ?? 200}`);
       if (responseData.code && responseData.code !== 200) {
         const msg = responseData.message || responseData.msg || 'Unknown error';
+        // code 301 是"需要登录"，HTTP 状态码仍然是 200。它和别的失败要分开：
+        // 调用方看到 AuthExpiredError 应该去要一次新的 MUSIC_U，而不是重试。
+        if (isLoginRequiredCode(responseData.code)) {
+          throw new AuthExpiredError(`${msg} (code: ${responseData.code})`);
+        }
         throw new Error(`${msg} (code: ${responseData.code})`);
       }
 
@@ -153,10 +165,10 @@ export class ApiClient {
           throw new Error('网络连接失败');
         }
         if (error.response?.status === 401) {
-          throw new Error('登录已失效，请重新填入 MUSIC_U');
+          throw new AuthExpiredError('登录已失效，请重新填入 MUSIC_U');
         }
         if (error.response?.status === 403) {
-          throw new Error('访问被拒绝，cookie 可能已过期');
+          throw new AuthExpiredError('访问被拒绝，cookie 可能已过期');
         }
         throw new Error(`请求失败: ${error.message}`);
       }
@@ -221,6 +233,41 @@ export class ApiClient {
         fs.rmSync(partPath, { force: true });
       } catch {
         /* 清理失败无所谓 */
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * 打开网易音频 CDN 的响应流，供受保护的 Provider 接口转发。
+   *
+   * 这里复用和本地下载相同的 IPv4 Agent、User-Agent 与 Referer；调用方负责
+   * 消费并关闭 stream。整个过程中不把音频缓存在 Node 堆内存里。
+   */
+  async openDownloadStream(url: string, signal?: AbortSignal): Promise<DownloadStream> {
+    try {
+      const response = await axios.get<Readable>(url, {
+        responseType: 'stream',
+        timeout: 120000,
+        httpAgent,
+        httpsAgent,
+        signal,
+        headers: {
+          'User-Agent': USER_AGENT,
+          Referer: 'https://music.163.com/',
+        },
+      });
+      const rawLength = response.headers['content-length'];
+      const contentLength = typeof rawLength === 'string' ? Number(rawLength) : undefined;
+      const rawType = response.headers['content-type'];
+      return {
+        stream: response.data,
+        contentLength: Number.isFinite(contentLength) ? contentLength : undefined,
+        contentType: typeof rawType === 'string' ? rawType : undefined,
+      };
+    } catch (error) {
+      if (error instanceof AxiosError) {
+        throw new Error(`音频下载失败: ${error.response?.status ?? error.code ?? error.message}`);
       }
       throw error;
     }

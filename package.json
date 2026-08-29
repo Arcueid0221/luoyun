@@ -9,6 +9,7 @@
   },
   "scripts": {
     "dev": "vite",
+    "service": "node --max-old-space-size=96 server/provider/server.ts",
     "build": "vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p server/tsconfig.json",
     "test": "node --test",
