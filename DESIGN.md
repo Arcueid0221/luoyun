@@ -817,12 +817,16 @@ Tailwind v4 的路子最省事：装 `@tailwindcss/vite` 插件，`index.css` �
 | `src/lib/search.test.ts` | 同上的理由，对象换成搜索规则。17 条里有一半是回归用的：命中必须带**歌单里的原始序号**（搜"陈奕迅"筛出第 2、4 首，序号得是 2 和 4 而不是 1 和 2 —— 那个数字就是落盘目录前缀）、全角关键词要能搜到半角（中文输入法下打英文默认是全角）、`matchesTerms` 不自己归一化 terms（契约写在函数注释里，测试就照契约传 `searchTerms()` 的产物，不许在测试里手动 `.toLowerCase()` 蒙过去） |
 | `src/store/selection.test.ts` | 勾选的作用域一旦有了搜索就不再显然：全选写成覆盖、反选写成取补集，在不搜索时和正确实现一模一样，一搜索才开始悄悄丢勾选。这类"两种写法在默认路径上等价"的东西必须有测试。zustand 的 persist 默认存储读的是 `window.localStorage`，node 里得先塞个内存版进 `globalThis.window`，否则它每次 set 警告一行、并且 `partialize`/`merge` 那两段根本不跑 |
 | `scripts/smoke.sh` | `npm run smoke`。第十节的"curl 打每个路由"手动做一遍要十几条命令，而下面那批安全检查（跨站、`Content-Type`、401、413、坏转义）全是"平时看不见、回归了也没人发现"的类型。5678 上有 dev server 就用现成的，没有就自己起一个跑完收掉；先问一次 `/api/auth/status`，登录和未登录期望的状态码不同。全程只读：`forget` 那条故意传非字符串 `destDir`，避免真删掉幂等记录 |
+| `server/provider/*` | Provider 模式：给 Aurora 博客用的第二个进程。整套说明在第十二节 |
+| `server/core/errors.ts` | `AuthExpiredError` + `isLoginRequiredCode`。"cookie 失效"和"Luoyun 出故障"对调用方是两件事（前者 401 让人重新粘 cookie，后者 5xx 该重试），而网易云表达前者的方式是 HTTP 200 + 业务码 301。要能 `instanceof` 分开，就必须有个类型；靠 match message 里的中文迟早会错 |
+| `server/http.test.ts` | `guardRequest` / `matchRoute` 的规则钉在测试里。回归价值最高的一条是"无 body 的 DELETE 不要求 `Content-Type`" —— 要求它的话浏览器那边毫无感觉（前端一律带这个头），Provider 的退出登录却永远 415 |
+| `server/core/errors.test.ts` | 同上，对象是"只有 301 算需要登录"。放宽成"所有非 200 业务码"会把无版权、参数错、风控全当成登录失效，把管理员送去重新登录一个其实还活着的账号 |
 
 ### 复审后补上的安全检查
 
 第八节只写了三条（不给 `--host`、`MUSIC_U` 不下发、路径穿越）。实际实现里另外加了四道，都是"这个进程持着等于账号本身的凭据 + 能读写家目录 + 固定监听 5678"这个前提直接推出来的：
 
-- **跨站防护 `guardRequest()`**（`server/http.ts`，分发前对 `/api/*` 全量跑）。凭据在 `session.json` 里而不是浏览器里，所以 SameSite cookie 那一套完全不起作用 —— 任何网页里一行 `fetch('http://127.0.0.1:5678/api/auth/cookie', …)` 只要送达就是带着账号身份执行的，攻击者连响应都不用读。三道：`Sec-Fetch-Site` 只放 `same-origin`/`none`（`same-site` 也拒，本机别的端口同样不可信）、`Origin` 出现了就必须和 `Host` 一致、写请求的 `Content-Type` 必须是 `application/json`（跨站不预检就能送达的只有 form/multipart/text-plain 三种简单请求）。命令行客户端三个头都不发，照常放行。
+- **跨站防护 `guardRequest()`**（`server/http.ts`，分发前对 `/api/*` 全量跑）。凭据在 `session.json` 里而不是浏览器里，所以 SameSite cookie 那一套完全不起作用 —— 任何网页里一行 `fetch('http://127.0.0.1:5678/api/auth/cookie', …)` 只要送达就是带着账号身份执行的，攻击者连响应都不用读。三道：`Sec-Fetch-Site` 只放 `same-origin`/`none`（`same-site` 也拒，本机别的端口同样不可信）、`Origin` 出现了就必须和 `Host` 一致、带 body 的写请求的 `Content-Type` 必须是 `application/json`（跨站不预检就能送达的只有 form/multipart/text-plain 三种简单请求）。DELETE 不在第三条里：简单请求的方法只有 GET/HEAD/POST，跨站发 DELETE 一定先预检、一定被挡，这个头对它没有防护价值，而要求它会误伤不带 body 的正经 DELETE（Java 的 HTTP 客户端默认不发这个头）。命令行客户端三个头都不发，照常放行。
 - **`server.cors: false`**（`vite.config.ts`）。Vite 默认给**所有** localhost 来源发 CORS 头，于是本机任何一个别的 dev server / Storybook / `http://x.localhost` 上的页面都能读我们的响应，`GET /api/fs/list` 能一层层列出整个家目录。页面和 API 同源，一个 CORS 头都不需要。
 - **`requireAuth()` 覆盖到所有交出本机状态的路由**，不只是碰网易云的那些：`/api/fs/default`、`/api/fs/list`（否则本机任何页面都能列家目录）、`GET /api/download`、`GET /api/download/:id`、`/api/download/:id/events`、`/api/download/:id/cancel`、`/api/download/forget`。
 - **错误一律 JSON、状态码一律精确**。`readBody` 挡掉非对象 body（`null` / 数字 / 数组会让 `body.x` 抛 TypeError → 500，把内部报错原文吐给客户端）、`content-length` 超限提前 413（只靠边读边数的话从 `for await` 里抛会顺手拆掉 socket，客户端看到的是连接重置）；`matchRoute` 里 `decodeURIComponent` 的 `URIError` 当成不匹配（否则 `/api/playlists/%` 会越过 `plugin.ts` 的 try 落到 Vite 的错误中间件，返回一整页带完整堆栈的 HTML）。
@@ -898,4 +902,77 @@ Tailwind v4 的路子最省事：装 `@tailwindcss/vite` 插件，`index.css` �
 - 第九节那四条**仍未联网确认**：需要一个有效 `MUSIC_U`，跑 `npm run verify` 即可，脚本只读不下载。
 - M4 里的 `/song/wiki/summary`（eapi）没碰，简介目前只有专辑 + 歌手两段。
 - 没配 `configurePreviewServer` —— API 是 dev-only 的，`npm run build` 的产物是纯静态前端，单独 preview 起来没有后端可用。
+
+## 十二、Provider 模式（把歌单交给 Aurora 博客）
+
+前十一节讲的都是"人坐在浏览器前面点下载"。后来多了第二个用途：让 Aurora 博客的管理端从这里导入歌单和音频。这一节讲这条路，`server/provider/` 整个目录都属于它。
+
+### 为什么是第二个进程，而不是多几条 `/api/*`
+
+`/api/*` 挂在 Vite dev server 上，那是开发期工具：它带 HMR、会整页刷新、`npm run build` 之后根本不存在。生产环境不能跑 `vite dev`。所以 Provider 是一个独立的 `node:http` 进程（`npm run service` → `server/provider/server.ts`），复用 `server/http.ts` 的那套原语（`matchRoute` / `readBody` / `json` / `fail` / `HttpError` / `guardRequest`）和整个 `server/core/`，但不碰 `server/routes/`、`server/download/`、`src/`。它不写磁盘（除了 `session.json`），没有 SQLite，没有下载流水线 —— 落盘归 Spring Boot 那边。
+
+### 路由表（全部 `/v1/*`）
+
+| 方法 + 路径 | 干什么 | 备注 |
+|---|---|---|
+| `GET /v1/health` | `{status:'ok', service:'luoyun-provider'}` | **唯一不要令牌的路由**，给容器 healthcheck 用；不透露任何账号信息 |
+| `POST /v1/session` | body `{musicU}`，验证通过才落盘 | 走 `setMusicU(raw, 'blog-admin')`，先验证再写文件 |
+| `GET /v1/session` | 登录状态 + 昵称 / 头像 / userId | 内部会真的打一次 `/nuser/account/get` |
+| `DELETE /v1/session` | 退出登录，删 `session.json` | |
+| `GET /v1/playlists` | 当前账号的歌单列表 | |
+| `GET /v1/playlists/:id` | 歌单详情（`trackIds` 分批补齐、按原序） | |
+| `GET /v1/tracks/:id/info` | 单曲详情 | |
+| `GET /v1/tracks/:id/lyric` | 歌词 | |
+| `GET /v1/tracks/:id/audio?quality=` | **流式**转发音频 | 见下面三道闸 |
+
+`:id` 一律先过 `/^\d+$/`，不是纯数字直接 400。
+
+### 鉴权
+
+除 `/v1/health` 外每个请求都要 `Authorization: Bearer <LUOYUN_SERVICE_TOKEN>`：
+
+- 令牌从环境变量来，**启动时就校验**，不足 32 字符直接 throw、进程起不来（错配的部署要在第一秒失败，而不是安静地跑着一个没防护的服务）。
+- 比较用 `isBearerTokenValid()`（`server/provider/security.ts`）：先比长度，等长才 `timingSafeEqual`，不用 `===`。
+- 令牌等价于这个账号。Provider 持着 MUSIC_U，谁拿到令牌就能替账号做事，所以它和 MUSIC_U 同级保管：只进服务器上 0600 的 `.env`，不进 Compose 文件、不进 Git、不进截图。
+- **不用 MUSIC_U 当令牌**。
+
+### 音频转发的三道闸
+
+`GET /v1/tracks/:id/audio` 是唯一会搬大块数据的接口，规则写死在代码里：
+
+- **只放 mp3**，只放 `standard` / `higher` / `exhigh` 三档（默认 `exhigh`）。别的格式 422 —— 博客那边的播放器和 MinIO 里的既有文件都是 mp3。
+- **90 MB 上限，卡两次**：先看网易给的 `audio.size`，再看真正打开流之后的 `content-length`（后者超限就 `stream.destroy()`，不往下读一个字节）。
+- **全程流式**，`pipeline(download.stream, res)`，音频不进 Node 堆内存。配套 `npm run service` 带 `--max-old-space-size=96`、容器 `mem_limit: 160m`：这两个数字的前提就是"音频不落堆"，改这条之前先改这两个数。
+
+响应头带 `X-Luoyun-Audio-Type` 和 `X-Luoyun-Audio-Level`（实际拿到的档位，可能低于请求的档位 —— 和 `SongInfo.audio` 那条同一个理由：静默降级事后查不出来）。
+
+### 状态码是给调用方看的契约
+
+Spring Boot 收到什么码决定它是重试、还是去提示管理员，所以这几条不能含糊：
+
+- **401 = 需要人重新粘一次 MUSIC_U**。cookie 失效时网易云的回法是 HTTP 200 + 业务码 301，`server/core/errors.ts` 把它（以及上游 401/403、`/nuser/account/get` 返回 `profile: null`）统一成 `AuthExpiredError`，Provider 的 `statusFor()` 把它映射成 401。不做这件事的话这些情况全是 500，调用方只能当"Provider 挂了"去重试，而重试一万次也不会让 cookie 复活。
+- **400 = 调用方给的东西不对**。`parseMusicU` 对"粘进来的根本不是一个 MUSIC_U"（带空白、带分号、空值）抛的是普通 Error，`POST /v1/session` 单独接住转 400。
+- **413 / 422 = 这首歌搬不了**（太大 / 不是 mp3 / 网易云没给可用地址），不用重试。
+- **500 = 真的是 Provider 的问题**，且只有这一档会 `warn()` 记日志。
+
+### 和 web 那边的关系
+
+同一台机器上两个进程共用 `~/.config/luoyun/session.json`，但**各自的 `AuthManager` 只在进程启动时读一次文件**、之后都在内存里。所以本地同时开着 `npm run dev` 和 `npm run service` 时，一边登录/退出另一边看不见，得重启。生产环境里只有 Provider 一个进程，不存在这个问题；容器里那份 session 挂在 `./luoyun-data:/root/.config/luoyun`。
+
+### 部署形态（细节见 `docs/阶段1部署替换打包备份验证手册.md`）
+
+- Provider 仍然**只监听 127.0.0.1**，Compose 里**不配 `ports`**，靠 `network_mode: service:backend` 和 Spring Boot 共用网络命名空间 —— 后端用 `http://127.0.0.1:5680` 访问，宿主机和外网都到不了。
+- healthcheck 用 `wget -qO- /v1/health`，**必须是 GET**：`matchRoute` 要求方法完全一致，HEAD 探针会拿到 404。
+- 打包给服务器的源码清单是 `server/provider/*` + `server/core/**` + `server/http.ts` + `package.json` / `package-lock.json`。`server/core/errors.ts` 是后加的，**别漏**（漏了容器起不来，好在会在临时目录的构建验收那一步就炸，不会打到生产）。
+- 生产的 `Dockerfile` / `.dockerignore` 目前只存在于服务器上，仓库里没有。这是个隐患：那台机器没了，构建配方也就没了。
+
+### 这一节还没做的
+
+- **未知路径的 404 早于令牌校验**（`matchRoute` 在前），所以不带令牌也能问出"哪些路由存在"。端口没对外，只算不整洁。
+- **`GET /v1/session` 每调一次就真的打一次网易云**。管理端要是轮询它，等于按轮询频率刷网易云的风控；该加个几十秒的结果缓存，存活探测用 `/v1/health`。
+- **Provider 自己没有并发闸**。现在靠 Aurora 那边"单并发消费 RabbitMQ 补全任务"兜着，一旦把消费者并发调大，`--max-old-space-size=96` 只护得住堆，socket 缓冲在堆外。
+- 音频转发没把客户端断开传导给 CDN 连接（`openDownloadStream(url, signal?)` 支持 `AbortSignal`，没传），也没校验写出字节数和 `Content-Length` 是否一致。
+- `server.ts` 顶层直接 throw + listen，没法被 import，所以 `parsePort` / `audioQuality` / 路由分发都没有单元测试；provider 目录下现在只有 `security.test.ts`。要补的话得先把 `routes` 和 `createProviderServer()` 拆到一个可 import 的模块里。
+- `Bearer` 前缀是大小写敏感的（RFC 7235 里 scheme 本该大小写无关）。Spring 发的是 `Bearer`，暂时没影响。
+
 
