@@ -1,0 +1,38 @@
+{
+  "name": "luoyun",
+  "private": true,
+  "version": "0.1.0",
+  "description": "落云 —— 网易云音乐歌单批量下载，把云端的歌落到本地磁盘",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p server/tsconfig.json",
+    "test": "node --test",
+    "smoke": "bash scripts/smoke.sh",
+    "verify": "node scripts/verify-endpoints.ts"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.102.8",
+    "@tanstack/react-virtual": "^3.14.10",
+    "axios": "^1.20.0",
+    "lucide-react": "^1.35.0",
+    "p-limit": "^7.3.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.4.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@vitejs/plugin-react": "^6.1.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
+  }
+}

@@ -1,0 +1,10 @@
+node_modules
+dist
+.DS_Store
+*.local
+*.log
+.idea
+.vscode
+
+# 这个项目处理的是等于账号本身的 cookie，宁可把整类文件挡在外面
+.env*

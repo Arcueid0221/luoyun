@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    // server/ 里的相对 import 一律写全 .ts：Vite 8 的原生 config loader
+    // 不认省略扩展名的写法，dev 启动时会刷一屏警告
+    "allowImportingTsExtensions": true,
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    // node 会直接跑这些文件（`node --test`、`node scripts/verify-endpoints.ts`），
+    // 而它只会擦类型、不会生成代码：enum / namespace / 构造器参数属性一律运行时报错。
+    // 开着它，这类写法在 typecheck 就被拦下来，而不是等到跑起来才炸。
+    "erasableSyntaxOnly": true,
+    "noUnusedLocals": true,
+    "noFallthroughCasesInSwitch": true,
+    "resolveJsonModule": true,
+    "types": ["node"]
+  },
+  // 前端那边的纯逻辑测试（src/lib/*.test.ts）也归这一套：它们跑在 node 上，
+  // 要 node:test 的类型；顺带保证被测的那些文件不偷偷用上 DOM API（这一套没有 DOM lib）。
+  "include": ["**/*.ts", "../vite.config.ts", "../scripts/**/*.ts", "../src/**/*.test.ts"]
+}

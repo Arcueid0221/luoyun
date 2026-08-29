@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    // 相对 import 一律写全扩展名，和 server/ 保持一致
+    "allowImportingTsExtensions": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    // 只允许"擦掉类型就能跑"的语法。enum / namespace / 构造器参数属性都要生成代码，
+    // 而 server/ 那半边是 node 直接跑 .ts（node --test、scripts/），碰上就报
+    // ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX。两边同一条规则，免得搬代码时踩到。
+    "erasableSyntaxOnly": true,
+    "noUnusedLocals": true,
+    "noFallthroughCasesInSwitch": true,
+    "resolveJsonModule": true,
+    "types": ["vite/client"]
+  },
+  // 测试文件交给 server/tsconfig.json（那一套有 node 的类型）。
+  // 跑 *.test.ts 的是 `node --test` 而不是浏览器；把 @types/node 塞进这一套，
+  // 组件里就也能看见 process / Buffer —— 那些东西在浏览器里并不存在。
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}

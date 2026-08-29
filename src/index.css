@@ -1,0 +1,29 @@
+@import 'tailwindcss';
+
+/* 深色是唯一主题。这是个本地工具，不做主题切换 */
+@theme {
+  --font-sans:
+    system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-zinc-950 text-zinc-100 antialiased;
+  font-family: var(--font-sans);
+}
+
+/* 曲目表上千行，滚动条默认样式在深色底上太扎眼 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-zinc-700) transparent;
+}
+
+/* 数字列（序号、时长、进度）用等宽，避免逐帧跳动 */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
