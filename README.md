@@ -1,10 +1,15 @@
 # 落云 luoyun
 
-把网易云音乐歌单里的**音频、封面、歌词、简介**批量落到本地磁盘。
+把网易云音乐歌单里的**音频、封面、歌词、简介**批量落到本地磁盘，也可以作为受保护的内部 Provider，为 Aurora 博客后台提供网易云导入能力。
 
-浏览器里点选，本机磁盘落盘 —— 前端只管界面，所有网易云请求和文件写入都发生在
-Vite dev server 进程里（Vite 的 `configureServer` 本身就是一个 Node HTTP 服务器，
-所以没有第二个后端框架）。
+Luoyun 有两种独立运行模式：
+
+| 模式 | 启动命令 | 用途 | HTTP 边界 |
+|---|---|---|---|
+| 本地备份 | `npm run dev` | 在浏览器中选择歌单并下载到个人电脑 | `127.0.0.1:5678/api/*` |
+| Provider | `npm run service` | 供 Aurora Spring Boot 导入歌单、歌曲、歌词和音频 | `127.0.0.1:5680/v1/*` |
+
+本地备份模式里，前端只管界面，所有网易云请求和文件写入都发生在 Vite dev server 进程中。Provider 则是独立的 `node:http` 服务，不依赖 Vite、不提供浏览器界面，也不运行本地下载任务。
 
 ```
 选歌单 →（搜歌名 / 歌手 / 专辑）→ 勾歌 → 勾要下的部分 → 选目录 → 开始 → 实时进度
@@ -35,6 +40,35 @@ npm run dev          # http://127.0.0.1:5678
 也可以点"从浏览器导入"直接读本机浏览器的 cookie，但需要额外装
 `npm i @steipete/sweet-cookie`，且 macOS 会弹钥匙串授权（Safari 还要给终端 App
 完全磁盘访问权限）。手填更省事。
+
+## Provider 模式
+
+Provider 用于把 Luoyun 作为一个可替换的网易云适配层接入 Aurora。Spring Boot 只依赖稳定的 `/v1/*` HTTP 契约，歌曲元数据由 MySQL 保存，音频和歌词由 Aurora 写入 MinIO；Provider 本身除了受限的 `session.json` 外不持久化业务数据。
+
+启动前必须通过进程环境提供至少 32 字符的独立服务令牌：
+
+```bash
+LUOYUN_SERVICE_TOKEN='<仅用于本地测试的32字符以上随机值>' npm run service
+```
+
+默认监听 `http://127.0.0.1:5680`。健康检查是唯一不需要令牌的路由：
+
+```bash
+curl http://127.0.0.1:5680/v1/health
+```
+
+接口按职责分为：
+
+| 范围 | 路由 |
+|---|---|
+| 健康检查 | `GET /v1/health` |
+| 会话 | `POST /v1/session`、`GET /v1/session`、`DELETE /v1/session` |
+| 歌单 | `GET /v1/playlists`、`GET /v1/playlists/:id` |
+| 歌曲 | `GET /v1/tracks/:id/info`、`GET /v1/tracks/:id/lyric`、`GET /v1/tracks/:id/audio?quality=` |
+
+除 `/v1/health` 外，所有请求都必须包含 `Authorization: Bearer <LUOYUN_SERVICE_TOKEN>`。音频接口只允许 MP3 和 `standard`、`higher`、`exhigh` 三档，大小上限为 90 MB，并通过流式管道转发，不把整首音频读入 Node 堆。
+
+生产环境中 Provider 仍应只监听 loopback，不配置公网 `ports`。Aurora 当前通过共享 backend 网络命名空间访问 `127.0.0.1:5680`；完整的打包、Compose、备份和回滚流程见[阶段 1 部署替换打包备份验证手册](./docs/阶段1部署替换打包备份验证手册.md)。
 
 ## 产物长什么样
 
@@ -78,6 +112,7 @@ npm run dev          # http://127.0.0.1:5678
 
 ```bash
 npm run dev          # 开发服务器（前端 + API）
+npm run service      # Provider 服务（仅 /v1/*，需要 LUOYUN_SERVICE_TOKEN）
 npm run build        # 只构建前端静态产物；API 是 dev-only 插件，产物里不含服务端代码
 npm run typecheck    # 前端 + server 两套 tsconfig
 npm test             # node:test 跑单元测试，零依赖
@@ -108,16 +143,20 @@ npm run verify       # 只读地验四个网易云端点的真实返回，需要
   同理关掉了 Vite 默认的 CORS（它默认给**所有** localhost 来源发头，
   于是本机任何一个别的 dev server 上的页面都能读到 `/api/fs/list` 的响应）。
 - 交出本机状态的路由（列目录、任务列表、进度流）也要求已登录，不只是碰网易云的那些。
+- `LUOYUN_SERVICE_TOKEN` 与 `MUSIC_U` 是两类凭证，绝不能混用。Provider 除健康检查外全部使用 Bearer Token，生产令牌只放在权限受限的服务器环境文件中，不进入 Compose、Git、日志或截图。
+- Provider 与本地 dev server 都只监听 `127.0.0.1`。不要把 5680 发布到公网，也不要为了方便让 Nginx 直接代理 `/v1/*`。
 
 ## 结构
 
 ```
-server/            仅 dev 期存在的 API，挂在 /api/*
-  core/            网易云接口层（crypto / client / auth / api/*），从 neteasecli 复制并整理
-  download/        任务编排、落盘、ffmpeg 内嵌、幂等库
+server/            两种运行模式共享的 Node 代码
+  core/            网易云接口层（crypto / client / auth / api/*），两种模式复用
+  routes/          本地备份模式的 /api/* 路由
+  download/        本地备份模式的任务编排、落盘、ffmpeg 内嵌、幂等库
+  provider/        独立 Provider 入口与 Bearer Token 校验，挂在 /v1/*
   http.ts          路由匹配 + JSON/SSE 应答的最小工具
-  plugin.ts        Vite 插件入口
-src/               React 前端
+  plugin.ts        本地备份模式的 Vite 插件入口
+src/               本地备份模式的 React 前端
 scripts/           只读脚本：端点真实返回验证 + /api/* 冒烟
 *.test.ts          单元测试跟被测文件放一起（命名规则、家目录边界）
 DESIGN.md          完整设计文档：每个文件有哪些函数、为什么这么写
@@ -127,7 +166,7 @@ DESIGN.md          完整设计文档：每个文件有哪些函数、为什么�
 那个文件因此必须保持零依赖。项目内所有相对 import 都写全 `.ts` 扩展名（Vite 8 的
 原生 config loader 不认省略写法）。
 
-改动细节和取舍理由见 [DESIGN.md](./DESIGN.md)。
+改动细节、Provider 契约和取舍理由见 [DESIGN.md](./DESIGN.md)。
 
 ## 说明
 
