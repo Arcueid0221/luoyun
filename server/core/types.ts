@@ -169,3 +169,9 @@ export interface AuthStatus {
   source?: string;
   error?: string;
 }
+
+/** 本地网页登录流程只返回状态，绝不把浏览器里的 cookie 下发给页面。 */
+export interface BrowserLoginPollStatus {
+  state: 'waiting' | 'authenticated';
+  session?: AuthStatus;
+}

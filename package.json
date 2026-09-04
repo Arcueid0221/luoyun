@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "落云 —— 网易云音乐歌单批量下载，把云端的歌落到本地磁盘",
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=24.0.0"
@@ -35,5 +36,8 @@
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vite": "^8.2.2"
+  },
+  "optionalDependencies": {
+    "@steipete/sweet-cookie": "^0.4.2"
   }
 }

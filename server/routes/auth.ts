@@ -1,7 +1,7 @@
-import { getAuthManager } from '../core/auth.ts';
+import { getAuthManager, type CheckResult } from '../core/auth.ts';
 import { clearDescriptionCache } from '../core/api/album.ts';
 import { HttpError, type Route } from '../http.ts';
-import type { AuthStatus } from '../core/types.ts';
+import type { AuthStatus, BrowserLoginPollStatus } from '../core/types.ts';
 
 /** 所有需要账号的路由第一行都调它 */
 export function requireAuth(): void {
@@ -17,12 +17,16 @@ async function buildStatus(): Promise<AuthStatus> {
   if (!auth.isAuthenticated()) return { authenticated: false };
 
   const result = await auth.checkAuth();
+  return statusFromCheck(result);
+}
+
+function statusFromCheck(result: CheckResult): AuthStatus {
   return {
     authenticated: result.valid,
     userId: result.userId,
     nickname: result.nickname,
     avatarUrl: result.avatarUrl,
-    source: auth.getSource(),
+    source: getAuthManager().getSource(),
     error: result.valid ? undefined : result.error,
   };
 }
@@ -40,7 +44,7 @@ export const authRoutes: Route[] = [
       const result = await getAuthManager().setMusicU(body.musicU);
       if (!result.valid) throw new HttpError(401, result.error ?? 'MUSIC_U 无效');
       clearDescriptionCache();
-      return buildStatus();
+      return statusFromCheck(result);
     },
   ],
 
@@ -53,7 +57,25 @@ export const authRoutes: Route[] = [
       const result = await getAuthManager().importFromBrowser(profile);
       if (!result.valid) throw new HttpError(401, result.error ?? '导入的 cookie 无效');
       clearDescriptionCache();
-      return buildStatus();
+      return statusFromCheck(result);
+    },
+  ],
+
+  [
+    'POST',
+    '/api/auth/import/poll',
+    async (ctx) => {
+      const body = await ctx.body<{ profile?: string }>();
+      const profile = typeof body.profile === 'string' ? body.profile : undefined;
+      const result = await getAuthManager().pollBrowserLogin(profile);
+      if (!result) {
+        return { state: 'waiting' } satisfies BrowserLoginPollStatus;
+      }
+      clearDescriptionCache();
+      return {
+        state: 'authenticated',
+        session: statusFromCheck(result),
+      } satisfies BrowserLoginPollStatus;
     },
   ],
 

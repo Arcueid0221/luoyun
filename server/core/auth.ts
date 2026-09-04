@@ -1,6 +1,13 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { createHash } from 'node:crypto';
+import type {
+  AllProfiles,
+  Cookie,
+  GetCookiesOptions,
+  GetCookiesResult,
+} from '@steipete/sweet-cookie';
 import type { CookieData } from './types.ts';
 import { verbose, warn } from './logger.ts';
 
@@ -93,9 +100,22 @@ export interface CheckResult {
   error?: string;
 }
 
+interface BrowserCookieCandidate {
+  cookies: CookieData;
+  source: string | undefined;
+}
+
+function cookieFingerprint(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
 export class AuthManager {
   private cookies: CookieData | null = null;
   private source: string | undefined;
+  /** 只保存不可逆指纹；自动检测时不要每三秒重复验证同一个失效 cookie。 */
+  private rejectedBrowserCandidates = new Map<string, number>();
+  /** 浏览器读取警告可能每次轮询都返回，只记一次避免刷屏。 */
+  private browserWarnings = new Set<string>();
 
   constructor() {
     const session = readSession();
@@ -106,10 +126,7 @@ export class AuthManager {
     }
   }
 
-  /**
-   * 主路径：用户手填 MUSIC_U。
-   * 先验证再落盘 —— 存一个无效 cookie 只会让下一次启动误以为已登录。
-   */
+  /** 手动兜底路径。先验证再落盘，避免下次启动误以为已登录。 */
   async setMusicU(raw: string, source = 'manual'): Promise<CheckResult> {
     const cookies = parseMusicU(raw);
 
@@ -126,43 +143,97 @@ export class AuthManager {
     }
 
     writeSession({ cookies, source, savedAt: Date.now() });
+    this.rejectedBrowserCandidates.clear();
     return result;
   }
 
-  /** 备用路径：从浏览器读 cookie。sweet-cookie 是 optional 依赖，装没装都要能跑。 */
-  async importFromBrowser(profile?: string): Promise<CheckResult> {
-    let getCookies: (options: Record<string, unknown>) => Promise<{
-      cookies: Array<{ name: string; value: string; source?: { browser?: string } }>;
-      warnings: string[];
-    }>;
+  /** sweet-cookie 是 optional 依赖，缺失时手填 MUSIC_U 仍然要能使用。 */
+  private async readBrowserCookies(profile?: string): Promise<GetCookiesResult> {
+    let getCookies: (options: GetCookiesOptions) => Promise<GetCookiesResult>;
+    let allProfiles: AllProfiles;
     try {
-      // 用变量做 specifier：这个包默认不装，写成字面量 tsc 会报 TS2307
+      // 保留动态 import：optional dependency 在不支持的平台安装失败时，应用仍可启动。
       const spec = '@steipete/sweet-cookie';
-      const mod = (await import(spec)) as unknown as { getCookies: typeof getCookies };
+      const mod = (await import(spec)) as unknown as {
+        getCookies: typeof getCookies;
+        ALL_PROFILES: AllProfiles;
+      };
       getCookies = mod.getCookies;
+      allProfiles = mod.ALL_PROFILES;
     } catch {
       throw new Error(
-        '未安装 @steipete/sweet-cookie，无法从浏览器导入。请改用手填 MUSIC_U，或先 npm i @steipete/sweet-cookie',
+        '未安装 @steipete/sweet-cookie，无法自动读取浏览器登录。请重新执行 npm install，或改用手填 MUSIC_U',
       );
     }
 
-    const options: Record<string, unknown> = {
+    const options: GetCookiesOptions = {
       url: 'https://music.163.com/',
       names: ['MUSIC_U'],
+      browsers: ['chrome', 'edge', 'firefox', 'safari'],
+      mode: 'merge',
     };
-    if (profile) options.chromeProfile = profile;
-
-    const { cookies: found, warnings } = await getCookies(options);
-
-    const cookieData: CookieData = {};
-    let browser: string | undefined;
-    for (const c of found) {
-      cookieData[c.name] = c.value;
-      if (!browser && c.source?.browser) browser = c.source.browser;
+    if (profile) {
+      options.chromeProfile = profile;
+    } else {
+      options.chromeProfile = allProfiles;
+      options.edgeProfile = allProfiles;
+      options.firefoxProfile = allProfiles;
     }
-    for (const w of warnings) warn(`cookie 导入警告: ${w}`);
 
-    if (!cookieData.MUSIC_U) {
+    return getCookies(options);
+  }
+
+  private browserCandidates(found: Cookie[], warnings: string[]): BrowserCookieCandidate[] {
+    for (const warning of warnings) {
+      if (this.browserWarnings.has(warning)) continue;
+      this.browserWarnings.add(warning);
+      warn(`cookie 导入警告: ${warning}`);
+    }
+
+    const candidates: BrowserCookieCandidate[] = [];
+    const seen = new Set<string>();
+    for (const c of found) {
+      if (c.name !== 'MUSIC_U' || !c.value || seen.has(c.value)) continue;
+      seen.add(c.value);
+      candidates.push({
+        cookies: { MUSIC_U: c.value },
+        source: c.source?.browser,
+      });
+    }
+
+    return candidates;
+  }
+
+  private async acceptBrowserCandidate(
+    cookieData: CookieData,
+    source: string | undefined,
+  ): Promise<CheckResult> {
+    const prevCookies = this.cookies;
+    const prevSource = this.source;
+    this.cookies = cookieData;
+    this.source = source ?? 'browser';
+
+    const result = await this.checkAuth();
+    if (!result.valid) {
+      this.cookies = prevCookies;
+      this.source = prevSource;
+      if (cookieData.MUSIC_U) {
+        this.rejectedBrowserCandidates.set(cookieFingerprint(cookieData.MUSIC_U), Date.now());
+      }
+      return result;
+    }
+
+    writeSession({ cookies: cookieData, source: this.source, savedAt: Date.now() });
+    this.rejectedBrowserCandidates.clear();
+    return result;
+  }
+
+  /** 备用路径：用户确认浏览器已经登录后，立即读取一次。 */
+  async importFromBrowser(profile?: string): Promise<CheckResult> {
+    const { cookies: found, warnings } = await this.readBrowserCookies(profile);
+    const candidates = this.browserCandidates(found, warnings);
+
+    if (!candidates.length) {
       const parts = ['没能从浏览器里找到网易云的登录 cookie。'];
       if (warnings.length) {
         parts.push('', '警告：', ...warnings.map((w) => `  - ${w}`));
@@ -171,20 +242,31 @@ export class AuthManager {
       throw new Error(parts.join('\n'));
     }
 
-    const prevCookies = this.cookies;
-    const prevSource = this.source;
-    this.cookies = cookieData;
-    this.source = browser ?? 'browser';
-
-    const result = await this.checkAuth();
-    if (!result.valid) {
-      this.cookies = prevCookies;
-      this.source = prevSource;
-      return result;
+    let lastResult: CheckResult = { valid: false, error: '浏览器中的网易云会话无效' };
+    for (const candidate of candidates) {
+      lastResult = await this.acceptBrowserCandidate(candidate.cookies, candidate.source);
+      if (lastResult.valid) return lastResult;
     }
+    return lastResult;
+  }
 
-    writeSession({ cookies: cookieData, source: this.source, savedAt: Date.now() });
-    return result;
+  /**
+   * 网页登录页打开后由前端低频调用。没有 cookie 或 cookie 尚未更新都返回 null，
+   * 不是错误；只有读取浏览器本身失败时才抛错，让前端停止自动轮询。
+   */
+  async pollBrowserLogin(profile?: string): Promise<CheckResult | null> {
+    const { cookies: found, warnings } = await this.readBrowserCookies(profile);
+    const candidates = this.browserCandidates(found, warnings);
+    for (const candidate of candidates) {
+      const musicU = candidate.cookies.MUSIC_U;
+      if (!musicU) continue;
+      const rejectedAt = this.rejectedBrowserCandidates.get(cookieFingerprint(musicU));
+      if (rejectedAt !== undefined && Date.now() - rejectedAt < 30_000) continue;
+
+      const result = await this.acceptBrowserCandidate(candidate.cookies, candidate.source);
+      if (result.valid) return result;
+    }
+    return null;
   }
 
   /** 拿当前 cookie 打一次 /nuser/account/get，这是唯一能确认 cookie 还活着的办法 */
@@ -228,6 +310,7 @@ export class AuthManager {
   logout(): void {
     this.cookies = null;
     this.source = undefined;
+    this.rejectedBrowserCandidates.clear();
     try {
       fs.rmSync(SESSION_FILE, { force: true });
     } catch {

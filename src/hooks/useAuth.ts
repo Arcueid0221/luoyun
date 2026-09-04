@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { get, post } from '../api/client.ts';
 import { useSelection } from '../store/selection.ts';
-import type { AuthStatus } from '../../server/core/types.ts';
+import type { AuthStatus, BrowserLoginPollStatus } from '../../server/core/types.ts';
 
 export function useAuthStatus() {
   return useQuery({
@@ -30,6 +30,19 @@ export function useImportFromBrowser() {
     mutationFn: (profile?: string) => post<AuthStatus>('/api/auth/import', { profile }),
     onSuccess: (status) => {
       client.setQueryData(['auth'], status);
+      void client.invalidateQueries({ queryKey: ['playlists'] });
+    },
+  });
+}
+
+/** 网页登录页打开后低频检测；waiting 是正常状态，不走 mutation error。 */
+export function usePollBrowserLogin() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => post<BrowserLoginPollStatus>('/api/auth/import/poll', {}),
+    onSuccess: (result) => {
+      if (result.state !== 'authenticated' || !result.session) return;
+      client.setQueryData(['auth'], result.session);
       void client.invalidateQueries({ queryKey: ['playlists'] });
     },
   });

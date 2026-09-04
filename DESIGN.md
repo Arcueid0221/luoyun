@@ -270,8 +270,9 @@ export type JobEvent =
 | 方法 | 作用 |
 |---|---|
 | `constructor()` | 启动时 `loadCookies()` |
-| `setMusicU(raw: string)` | ★ **新增，主登录路径**。见下 |
-| `importFromBrowser(profile?)` | 备选。动态 import `@steipete/sweet-cookie`，只要 `names: ['MUSIC_U']` |
+| `setMusicU(raw: string)` | 手动登录兜底。见下 |
+| `importFromBrowser(profile?)` | 对已经登录的浏览器立即读取一次 |
+| `pollBrowserLogin(profile?)` | 官方登录页打开后低频检测；没有 cookie 是 waiting，不是错误 |
 | `checkAuth()` | 调 `getUserProfile()` 验证 cookie 是否还活着，返回 `{ valid, userId?, nickname?, avatarUrl?, error? }` |
 | `isAuthenticated()` | 纯本地判断有没有 `MUSIC_U`，不发网络请求 |
 | `getCookieString()` | 给 `client.getCookieHeader()` 用 |
@@ -287,6 +288,12 @@ export type JobEvent =
 - 还可能带首尾引号或换行
 
 所以：trim → 去首尾引号 → 如果含 `MUSIC_U=` 就用正则 `/MUSIC_U=([^;\s]+)/` 抽出来 → 否则当裸值 → 校验非空且不含 `;` 和空白 → 存盘。抽不出来就抛一个说清楚该抄哪个值的错误。
+
+本地页面的默认登录路径是：同步打开 `https://music.163.com/#/login`，然后每 3 秒调用
+`POST /api/auth/import/poll`。后端只扫描 `music.163.com`，只提取 Chrome、Edge、Firefox、Safari
+各配置文件中的 `MUSIC_U`；同一个失效值 30 秒内不重复向网易验证。成功后仍只返回
+`AuthStatus`，cookie 从不进入页面。前端 2 分钟后自动停止，也允许用户主动取消；手动
+`setMusicU` 和单次 `importFromBrowser` 都继续保留。
 
 ### `server/core/api/transform.ts` — 字段转换（去重后的唯一一份）
 
@@ -974,5 +981,3 @@ Spring Boot 收到什么码决定它是重试、还是去提示管理员，所�
 - 音频转发没把客户端断开传导给 CDN 连接（`openDownloadStream(url, signal?)` 支持 `AbortSignal`，没传），也没校验写出字节数和 `Content-Length` 是否一致。
 - `server.ts` 顶层直接 throw + listen，没法被 import，所以 `parsePort` / `audioQuality` / 路由分发都没有单元测试；provider 目录下现在只有 `security.test.ts`。要补的话得先把 `routes` 和 `createProviderServer()` 拆到一个可 import 的模块里。
 - `Bearer` 前缀是大小写敏感的（RFC 7235 里 scheme 本该大小写无关）。Spring 发的是 `Bearer`，暂时没影响。
-
-
